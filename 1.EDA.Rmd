@@ -1,0 +1,151 @@
+---
+title: "Weather Pred - Exploratory Data Analysis"
+output:
+  html_document:
+    df_print: paged
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+-----
+
+
+
+```{r global_options, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+Sys.setenv(TZ='GMT')
+library(install.load)
+install_load(c('tidyverse', 'lubridate', 'ggpubr', "skimr", "caret", "zeallot", "zoo"))
+
+###Load data 
+source("loadData.R")
+```
+
+
+### Problem - Predict whether it will rain tomorrow in New York 
+
+* **Assumptions**
+  1. Predict whether it will rain at any given point in the day and not necessarily every hour.
+  2. This is not intended to be future forecasting problem such as future stock price prediction. For such cases different time-series forecasting methods such as ARIMA or additive models that aim to estimate the parameters for underlying trends(linear and non-linear) such as seasonility etc in longitudinal timeseries should be used. 
+
+* **Note** - 10% of the data has been resevered for testing and is not part of any data exploration. This dataset will be used only once after a fully specified model is picked using Training(65%) and Validation(25%) data. 
+
+
+-----
+
+<br>
+
+
+### Descriptive Statisitcs - Hourly Weather Data for New York
+
+```{r}
+Weather.Hourly.Data <- data.by.hour %>% select(-month,-date, -year, -weatherType,
+                                               -hour, -week, -rain, -season)
+skimr::skim(Weather.Hourly.Data)
+```
+
+
+--------
+
+<br>
+
+
+#### Observations (raw data):
+
+* There are close to 45K data points in the hourly weather data between Jan, 2012 - Nov, 2017
+* Missingness in this data is not really a huge issue (<4%). In the present case we are not imputing to fill the missing data. However it maybe required in certain specific use cases where various imputation methods (mean, clustering based nearest neighbour, nearest hour value etc) could be used
+
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+tmp <- Weather.Hourly.Data %>% tidyr::gather('feature', 'value', -datetime)
+tmp %>% ggplot(aes(x=value)) + facet_wrap( . ~ feature, scales = "free") + geom_density() + theme_bw(base_size = 15)
+```
+
+
+### Weekly running mean of the five weather features over 5 years
+
+```{r, fig.align='center', fig.width=8, fig.height=10}
+tmp <- Weather.Hourly.Data %>% 
+  tidyr::gather('feature', 'value', -datetime) %>%
+  dplyr::group_by(feature) %>%
+  dplyr::mutate(value.rollmean = zoo::rollmean(value, k=24*7, fill=NA))
+p <- tmp %>% ggplot(aes(y=value.rollmean, x=datetime )) + facet_grid(feature ~ . , scales = "free") + geom_line() + theme_bw(base_size = 15)
+p + ylab('weather feature value') + xlab('time 2012-2017')
+```
+
+
+
+------------------
+
+<br>
+
+
+### Defining response variable for the problem
+  *  **Rain (Yes/No)** - For binary classification. Based on the whether it rained at all on any given day. All weather description values _rain|thunder|drizzle_ were convereted to rain. 
+  * **Rain/Snow/Clear/Cloudy/Other** -  For multiclass classfication the following conversion was used to create a response variable
+
+|Weather Description containing | Final Label|
+|--|--|
+|rain, thunder, drizzle| rain |
+| cloud, fog , mist | cloudy |
+| snow |  snow |
+| clear | clear|
+|ALL OTHER | other|
+    
+
+--------
+
+
+### Feature(hourly) distribution faceted by whether it rained in that hour
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+caret::featurePlot(data.by.hour %>% select(humidity, pressure, temperatureF,
+                                           windSp, windDir),
+                   y = data.by.hour$rain,
+                   plot="density",
+                   scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+```
+
+
+-----------------
+
+<br>
+
+
+
+### Feature Engineering 
+The following derived features were added to generate two data sets for machine learning 
+
+* By hour 
+  1. Season 
+  2. Week of year
+  3. Month
+
+* By Day - For each of the 5 weather features the following summary was generated per day
+  1. Mean 
+  2. Median
+  3. Interquartile 
+  4. Minimum  and Maximum value on the day
+  5. Standard deviation
+  6. Average and SD change during the day
+
+
+
+### Baseline rate of rain based on historic data 
+* Across years prop of days with rain : `table(data)
+
+* By Month
+```{r, eval=F}
+month.summary <- data.by.day %>% 
+  dplyr::group_by(year, month) %>%
+  dplyr::summarise(rainDays = sum(rain),
+                   percent = round((rainDays/n())*100, digits=2))
+ggplot(data=month.summary, aes(x=month, y=percent)) + geom_point()
+ggplot(data=month.summary, aes(x=month, y=rainDays/5)) + geom_point()
+
+```
+
+
+
+
