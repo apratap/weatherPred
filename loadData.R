@@ -187,9 +187,9 @@ set.seed(13434)
 testDays <- sample(totalDays, size = length(totalDays) * .10)
 
 ##### NEVER TO BE SEEN TEST DATA
-TEST.data.by.day <- data.by.day %>% filter(date %in% testDays)
-TEST.data.by.hour <- data.by.hour %>% filter(date %in% testDays)
-TEST.data.by.tod  <- data.by.tod %>% filter(date %in% testDays)
+TEST.data.by.day <- data.by.day %>% filter(date %in% testDays) %>% na.omit()
+TEST.data.by.hour <- data.by.hour %>% filter(date %in% testDays) %>% na.omit()
+TEST.data.by.tod  <- data.by.tod %>% filter(date %in% testDays) %>% na.omit()
 
 ### Remaining Training and Validation
 data.by.day  <- data.by.day %>% filter(!date %in% testDays)

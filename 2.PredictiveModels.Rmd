@@ -1,0 +1,396 @@
+---
+title: "Weather Pred - Predictive Modelling"
+output:
+  html_document:
+    df_print: paged
+date: "Feb 11, 2020"
+---
+
+
+```{r global_options, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+Sys.setenv(TZ='GMT')
+library(install.load)
+install_load(c('tidyverse', 'lubridate', 'ggpubr', "skimr", "caret", "zeallot", "doMC"))
+
+registerDoMC(3) #no of cores to use
+###Load data 
+source("loadData.R")
+```
+
+
+-------
+
+## Predict Rain(Yes/No) on a given day - Two approaches
+
+
+* **A** - Using the day-wise aggregated stats
+* **B** - Using the day-wise aggregated stats further stratified by time-of-day(eg. morning, afternoon etc)
+* _While I did evaluate the utility of using hourly data, the size of data was not amenable for model evaluation and parameter tuning in a limited time. As a result this approach along with multi-class prediction (rain/cloud/clear day etc) was dropped from further exploration although some code for the same has been left_
+
+
+Given the nature of this exercise I have used the following machine learning methods/models based on compute efficiency and robustness for quick evaluation of the signal in the underlying data
+
+  * Random Forest (ensemble of small decision trees) - Baseline model using Month, Season as only features
+  * Random Forest - With Aggregate daily weather features (see Exploratory data analysis for details)
+  * Neural Network(Deep Learning) - Simple 2 layer fully connected network
+  * Also tried K-Nearest Neighbour and Gradient Boosting models but excluded after initial exploration due to limited time and optimization time particularly for gradient boosting method.
+  
+**Other Notes**
+
+* Of the 90% data used for Training and Validation - 75% of it will be used for training and 25% for validation
+
+* Model assessment:
+  * 5 Cross fold validation was used for parameter tuning 
+  * Ideally would have preferred to use repeated 10-fold CV but is compute intensive for a quick exercise
+  * Parameter search grid was limited to a small search space for compute efficiency
+  * Tuning of all model parameters especially for neural network has not been done due to compute time
+  
+
+* Model Evaluation:
+  * While I have computed a number of model evaluation metrics(see under each model), for this exercise I mainly focused on accuracy and balanced-accuracy for cases when there was a severe class imbalance such as in Approach B(defined above)
+
+
+---------
+
+
+### Approach A: Predict Rain (Yes/No) - using aggregated data by the day 
+
+```{r}
+
+N_K.FOLD = 5
+TUNE.Length = 5
+
+createTrainTest <- function(df, responseCol){
+  df <- na.omit(df)
+  df['response'] = df[[responseCol]]
+  df[[responseCol]] <- NULL
+  trainRowNum <- sample(1:nrow(df))[1:round(nrow(df)*.75)]
+  train <- df[trainRowNum,]
+  test <- df[-trainRowNum,]
+  list(train,test)
+}
+
+fitControl.twoClass <- trainControl(
+    method = 'cv',                  
+    number = N_K.FOLD,   
+    savePredictions = F,      
+    classProbs = T,    
+    #summaryFunction=twoClassSummary,
+    allowParallel = T) 
+```
+
+
+#### A.1 Baseline Random Forest Model
+_Using Month, Season as features_
+
+```{r, cache=T, fig.align='center', fig.width=6, fig.height=8}
+#Prepare final data for modelling 
+df <- data.by.day %>% select(month, season, rain) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+#caret::modelLookup('rf')
+rf_baseline_model = train(response ~ ., data=train, method='ranger', trControl = fitControl.twoClass,
+                          metric = "Accuracy", importance ="permutation",
+                          tuneLength = TUNE.Length)
+predicted.labels <- predict(rf_baseline_model, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+plot(varImp(rf_baseline_model))
+```
+
+This is equivalent to fraction of days it rained in the year (on average). Given it rains more often in NYC in summer it is no surprise that the Random Forest method finds summer season to be most important feature in a baseline model.
+
+-----
+
+#### A.2 - Random Forest Model with All Features
+
+```{r, cache=T, fig.align='center', fig.width=6, fig.height=8}
+df <- data.by.day %>% select(-date, -year, -week) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+rf_model = train(response ~ ., data=train, method='ranger', trControl = fitControl.twoClass, 
+                 tuneLength = TUNE.Length, metric = "Accuracy", importance = "permutation")
+predicted.labels <- predict(rf_model, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+plot(varImp(rf_model))
+```
+
+
+A random forest model utilizing aggregated features on top of baseline model improves the model performance of predicting a rainy day by approximately by 17% (from 57% in the baseline mode to 74% in the model that uses additional weather features)
+
+------
+
+
+### A.3 Simple 2-layer fully connected neural network with a L1/L2 regularizer at one of the layer
+
+```{r, cache=T, fig.align='center', fig.width=8, fig.height=6}
+install_load("keras")
+df <- data.by.day %>% select(-date, -year, -week) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+
+y_train <- as.numeric(as.character(plyr::revalue(train$response, c('No'=0, 'Yes'=1))))
+y_test  <- as.numeric(as.character(plyr::revalue(test$response, c('No'=0, 'Yes'=1))))
+
+test <- test %>% dplyr::mutate(month = as.numeric(month),
+                               season = as.numeric(season)) %>% dplyr::select(-response)
+
+train <- train %>% dplyr::mutate(month = as.numeric(month),
+                                 season = as.numeric(season)) %>% dplyr::select(-response)
+
+nn_model <- keras_model_sequential() %>%
+  layer_dense(units=10, activation="relu", input_shape = c(40)) %>%
+  layer_dense(units=10, activation="relu",
+              regularizer_l1_l2(l1 = 0.001, l2 = 0.001)) %>%
+  layer_dense(units=1, activation = "sigmoid")
+
+nn_model %>% compile(
+   optimize = "rmsprop",
+   loss = "binary_crossentropy",
+   metrics = c("accuracy") )
+
+nn_model.train <- nn_model %>% 
+  fit(as.matrix(train), y_train,
+      epochs = 200, batch_size = 400,
+      validation_data = list(as.matrix(test), y_test))
+
+nn_model.train
+plot(nn_model.train) + theme_bw()
+```
+
+Using a simple 2 layer fully connected nueral network(deep learning) does worse than the random forest and infact close to the baseline model. There can be many reasons including that this model has not been fine tuned for any hyperparameters such as
+  * number of hidden layers
+  * drop out
+  * regularization
+  * epochs
+  * batch size
+  * lack of adequate training sample size : high variance in training and validation data
+
+Infact this model should only be used for demonstration purposes.
+
+
+-------------
+
+### Approach B: Predict Rain (Yes/No) - using aggregated data faceted by time of day
+
+#### B.1 Baseline Random Forest Model
+_Using Month, Season, Time of Day as features_
+
+
+```{r, cache=T, fig.align='center', fig.width=6, fig.height=8}
+df <- data.by.tod %>% select(month, season, tod, rain) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+rf_baseline_model_tod = train(response ~ ., data=train, method='ranger', trControl = fitControl.twoClass,
+                          metric = "Accuracy", importance ="permutation",
+                          tuneLength = TUNE.Length)
+predicted.labels <- predict(rf_baseline_model_tod, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+plot(varImp(rf_baseline_model_tod))
+```
+
+Stratifying the baseline model by time of day(morning, afternoon etc) shows improved null model performance on predicting whether it will rain in certain time of the day. However as you carefully look at the metrics ,the model is not really learning anything here (No information rate ~ Accuracy) and the balanced accuracy is 50%. It is mainly reflecting that the fact that it rains more often in NYC during certain times of the day (such as afternoon) as captured by the time-of-day co-variate.
+
+
+#### B.2 - Random Forest Model with All Features
+
+```{r, cache=T, fig.align='center', fig.width=6, fig.height=12}
+df <- data.by.tod %>% select(-date, -year, -week) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+rf_model_tod = train(response ~ ., data=train, method='ranger', trControl = fitControl.twoClass, 
+                 tuneLength = TUNE.Length, metric = "Accuracy", importance = "permutation")
+predicted.labels <- predict(rf_model_tod, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+plot(varImp(rf_model_tod))
+```
+
+
+Similarly a more complex random forest model using all the weather features stratified by time of day although does better than baseline model, the balanced accuracy is still lower(67.7%) than the simpler model that used aggregated daily features(72.8%). However we are also comparing two models that are aiming to predict rain in different windows (anytime in a day vs within a specific time of day). One could use the window-wise prediction and roll them into day-wise prediction and compare the day-wise accuracy then. 
+
+
+
+### B.3 Simple 2-layer fully connected neural network
+
+```{r, cache=T, fig.align='center', fig.width=8, fig.height=6}
+install_load("keras")
+df <- data.by.tod %>% select(-date, -year, -week) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+
+y_train <- as.numeric(as.character(plyr::revalue(train$response, c('No'=0, 'Yes'=1))))
+y_test  <- as.numeric(as.character(plyr::revalue(test$response, c('No'=0, 'Yes'=1))))
+
+test <- test %>% 
+  dplyr::mutate(month = as.numeric(month), season = as.numeric(season), tod = as.numeric(as.factor(tod))) %>% 
+  dplyr::select(-response)
+
+train <- train %>% 
+  dplyr::mutate(month = as.numeric(month), season = as.numeric(season), tod = as.numeric(as.factor(tod))) %>% 
+  dplyr::select(-response)
+
+nn_model_tod <- keras_model_sequential() %>%
+  layer_dense(units=10, activation="relu", input_shape = c(41)) %>%
+  layer_dense(units=10, activation="relu",
+              regularizer_l1_l2(l1 = 0.001, l2 = 0.001)) %>%
+  layer_dense(units=1, activation = "sigmoid")
+
+nn_model_tod %>% compile(
+   optimize = "rmsprop",
+   loss = "binary_crossentropy",
+   metrics = c("accuracy") )
+
+nn_model_tod.train <- nn_model_tod %>% 
+  fit(as.matrix(train), y_train,
+      epochs = 500, batch_size = 1000,
+      validation_data = list(as.matrix(test), y_test))
+
+#nn_model_tod.train
+predict.probs <- predict(nn_model_tod, as.matrix(test))
+predict.labels <- ifelse(predict.probs < .5 , 0 , 1)
+confusionMatrix(reference=factor(y_test), data=factor(predict.labels), mode="everything", positive="1")
+
+plot(nn_model_tod.train) + theme_bw() 
+```
+
+Similar to approach A.3, the neural network does not do better than the random forest model (A.2), however as I said before this model has not really been fine-tuned for hyperparameters using a grid search.
+
+--------
+
+## Final performance of selected model(Approach A.2) on the test data(10%)
+
+```{r}
+TEST.data.by.day <- TEST.data.by.day %>% na.omit()
+test.set.predictions = predict(rf_model, TEST.data.by.day)
+confusionMatrix(reference=TEST.data.by.day$rain, data=test.set.predictions, mode="everything", positive="Yes")
+```
+
+### Overall the final selected model(A.2) performs relatively well on completely held out test data (10% days of 5 years) with a balanced accuracy of 77.8%
+
+
+
+
+```{r, eval=F}
+##### OTHER CODE TRIED - TO BE IGNORED 
+```
+
+
+```{r, eval=F}
+models_compare = caret::resamples(list(baseline = rf_baseline_model, model1 = rf_model), )
+summary(models_compare)
+bwplot(models_compare , metric = c("Accuracy", "Recall"))
+```
+
+
+
+```{r, eval=F}
+-----------
+
+## 2 - Predict Rain(Yes/No) - using Hourly Data
+
+N_K.FOLD = 5
+TUNE.Length = 5
+
+createTrainTest <- function(df, responseCol){
+  df <- na.omit(df)
+  df['response'] = df[[responseCol]]
+  df[[responseCol]] <- NULL
+  trainRowNum <- sample(1:nrow(df))[1:round(nrow(df)*.75)]
+  train <- df[trainRowNum,]
+  test <- df[-trainRowNum,]
+  list(train,test)
+}
+
+fitControl.multiClass <- trainControl(
+    method = 'cv',                  
+    number = N_K.FOLD,   
+    savePredictions = F,
+    classProbs = T,    
+    summaryFunction=multiClassSummary,
+    allowParallel = T) 
+```
+
+
+```{r, cache=T, fig.align='center', fig.width=6, fig.height=8, eval=F}
+#### 2.A Random Forest Model with All Features
+df <- data.by.hour %>% select(-datetime, -year, -week, -date, -rain) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "weatherType")
+rf_model_hourF = train(response ~ ., data=train, method='ranger', 
+                       trControl = fitControl.multiClass, 
+                       tuneLength = TUNE.Length, metric = "Accuracy", 
+                       importance = "permutation")
+predicted.labels <- predict(rf_model_hourF, test)
+confusionMatrix(reference=factor(test$response), data=predicted.labels, 
+                mode="everything", positive="Yes")
+plot(varImp(rf_model_hourF))
+```
+
+```{r, eval=F}
+df <- data.by.hour %>% select(-datetime, -year, -week, -date, -weatherType) 
+set.seed(12345)
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+train <- na.omit(train)
+test <- na.omit(test)
+
+y_train <- as.numeric(as.character(plyr::revalue(train$response, c('No'=0, 'Yes'=1))))
+y_test  <- as.numeric(as.character(plyr::revalue(test$response, c('No'=0, 'Yes'=1))))
+
+test <- test %>% 
+  dplyr::mutate(month = as.numeric(month),
+                season = as.numeric(season),
+                hour = as.numeric(hour)) %>% 
+  dplyr::select(-response)
+
+train <- train %>% 
+  dplyr::mutate(month = as.numeric(month),
+                season = as.numeric(season),
+                hour = as.numeric(hour)) %>% 
+  dplyr::select(-response)
+
+model <- keras_model_sequential() %>%
+  layer_dense(units=5, activation="relu", input_shape = c(8)) %>%
+  #layer_dense(units=10, activation="relu",
+  #            regularizer_l1_l2(l1 = 0.001, l2 = 0.001)) %>%
+  # layer_dense(units=10, activation="relu") %>%
+  layer_dense(units=1, activation = "sigmoid")
+
+model %>% compile(
+   optimize = "rmsprop",
+   loss = "binary_crossentropy",
+   metrics = c("accuracy") )
+
+history <- model %>% 
+  fit(as.matrix(train.mod), y_train,
+      epochs = 100, batch_size = 1000,
+      validation_data = list(as.matrix(test.mod), y_test))
+history
+```
+
+
+```{r, cache=T, eval=F}
+set.seed(12345)
+df <- data.by.day %>% select(-date, -year, rain) 
+c(train, test) %<-% createTrainTest(df, responseCol = "rain")
+set.seed(12345)
+caret::modelLookup('knn')
+knn_model = train(response ~ ., data=train, method='knn', trControl = fitControl.twoClass,
+                  tuneLength = 10)
+knn_model
+predicted.labels <- predict(knn_model, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+```
+
+
+```{r, eval=F}
+caret::modelLookup('xgbDART')
+xgb_model = train(response ~ ., data=train, method='xgbDART', trControl = fitControl , tuneLength = 5)
+xgb_model
+predicted.labels <- predict(xgb_model, test)
+confusionMatrix(reference=test$response, data=predicted.labels, mode="everything", positive="Yes")
+```
+
+
+
+
