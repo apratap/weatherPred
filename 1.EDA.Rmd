@@ -3,7 +3,7 @@ title: "Weather Pred - Exploratory Data Analysis"
 output:
   html_document:
     df_print: paged
-date: "`r format(Sys.time(), '%d %B, %Y')`"
+date: "Feb 11, 2020"
 ---
 
 -----
@@ -50,10 +50,9 @@ skimr::skim(Weather.Hourly.Data)
 <br>
 
 
-
-```{r, fig.align='center', fig.width=8, fig.height=6}
-tmp <- Weather.Hourly.Data %>% tidyr::gather('feature', 'value', -datetime)
-tmp %>% ggplot(aes(x=value)) + facet_wrap( . ~ feature, scales = "free") + geom_density() + theme_bw(base_size = 15)
+```{r, cache=T, fig.align='center', fig.width=8, fig.height=6}
+tmp <- Weather.Hourly.Data %>% select(-tod) %>% tidyr::gather('feature', 'value', -datetime)
+tmp %>% ggplot(aes(x=as.numeric(value))) + facet_wrap( . ~ feature, scales = "free") + geom_density() + theme_bw(base_size = 15)
 ```
 
 #### Observations (raw data):
@@ -62,12 +61,14 @@ tmp %>% ggplot(aes(x=value)) + facet_wrap( . ~ feature, scales = "free") + geom_
 * Missingness in this data is not really a huge issue (<4%). In the present case we are not imputing to fill the missing data. However it maybe required in certain specific use cases where various imputation methods (mean, clustering based nearest neighbour, nearest hour value etc) could be used
 * Outliers - Based on the density plot as well as quantile summary stats it doesnt look like to data has significant outliers. Although Wind Speed shows multiple distinct peaks
 
+-------
+
 
 ### Weekly running mean of the five weather features over 5 years
 
 ```{r, fig.align='center', fig.width=8, fig.height=10}
 tmp <- Weather.Hourly.Data %>% 
-  tidyr::gather('feature', 'value', -datetime) %>%
+  tidyr::gather('feature', 'value', -datetime, -tod) %>%
   dplyr::group_by(feature) %>%
   dplyr::mutate(value.rollmean = zoo::rollmean(value, k=24*7, fill=NA))
 p <- tmp %>% ggplot(aes(y=value.rollmean, x=datetime )) + facet_grid(feature ~ . , scales = "free") + geom_line() + theme_bw(base_size = 15)
