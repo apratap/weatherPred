@@ -22,11 +22,11 @@ source("loadData.R")
 ```
 
 
-### Problem - Predict whether it will rain tomorrow in New York 
+### Problem - Predict whether it will rain tomorrow in New York using 5 year hourly weather data
 
 * **Assumptions**
-  1. Predict whether it will rain at any given point in the day and not necessarily every hour.
-  2. This is not intended to be future forecasting problem such as future stock price prediction. For such cases different time-series forecasting methods such as ARIMA or additive models that aim to estimate the parameters for underlying trends(linear and non-linear) such as seasonility etc in longitudinal timeseries should be used. 
+  1. Predict whether it will rain at any given point in the day and not necessarily every hour. 
+  2. Also this is not intended to be future forecasting problem such as future stock price prediction. For such cases different time-series forecasting methods such as ARIMA or additive models that aim to estimate the parameters for underlying trends(linear and non-linear) such as seasonility etc in longitudinal timeseries should be used. 
 
 * **Note** - 10% of the data has been resevered for testing and is not part of any data exploration. This dataset will be used only once after a fully specified model is picked using Training(65%) and Validation(25%) data. 
 
@@ -50,16 +50,17 @@ skimr::skim(Weather.Hourly.Data)
 <br>
 
 
-#### Observations (raw data):
-
-* There are close to 45K data points in the hourly weather data between Jan, 2012 - Nov, 2017
-* Missingness in this data is not really a huge issue (<4%). In the present case we are not imputing to fill the missing data. However it maybe required in certain specific use cases where various imputation methods (mean, clustering based nearest neighbour, nearest hour value etc) could be used
-
 
 ```{r, fig.align='center', fig.width=8, fig.height=6}
 tmp <- Weather.Hourly.Data %>% tidyr::gather('feature', 'value', -datetime)
 tmp %>% ggplot(aes(x=value)) + facet_wrap( . ~ feature, scales = "free") + geom_density() + theme_bw(base_size = 15)
 ```
+
+#### Observations (raw data):
+
+* There are close to 45K (10% reseverd for final testing) data points in the hourly weather data between Jan, 2012 - Nov, 2017
+* Missingness in this data is not really a huge issue (<4%). In the present case we are not imputing to fill the missing data. However it maybe required in certain specific use cases where various imputation methods (mean, clustering based nearest neighbour, nearest hour value etc) could be used
+* Outliers - Based on the density plot as well as quantile summary stats it doesnt look like to data has significant outliers. Although Wind Speed shows multiple distinct peaks
 
 
 ### Weekly running mean of the five weather features over 5 years
@@ -74,6 +75,9 @@ p + ylab('weather feature value') + xlab('time 2012-2017')
 ```
 
 
+* As one would expect the longitudinal weather features  shows seasonal patterns specailly for temperature. As I said earlier for true future weather forecasting problem the preferred approach will be timeseries based methods. However based on the langauge of this task I am assuming it is catered towards the use of classification/machine learning methods.
+
+
 
 ------------------
 
@@ -82,7 +86,7 @@ p + ylab('weather feature value') + xlab('time 2012-2017')
 
 ### Defining response variable for the problem
   *  **Rain (Yes/No)** - For binary classification. Based on the whether it rained at all on any given day. All weather description values _rain|thunder|drizzle_ were convereted to rain. 
-  * **Rain/Snow/Clear/Cloudy/Other** -  For multiclass classfication the following conversion was used to create a response variable
+  * **Rain/Snow/Clear/Cloudy/Other** -  For multiclass classfication the following conversion was used to create a response variable. However due to compute requirement for model training using the hourly data multiclass prediction was not pursued.
 
 |Weather Description containing | Final Label|
 |--|--|
@@ -108,6 +112,8 @@ caret::featurePlot(data.by.hour %>% select(humidity, pressure, temperatureF,
 ```
 
 
+Looking at the data distribution it seems humidity should be the most important variable that can distinguish between rain and no-rain days.
+
 -----------------
 
 <br>
@@ -129,14 +135,16 @@ The following derived features were added to generate two data sets for machine 
   4. Minimum  and Maximum value on the day
   5. Standard deviation
   6. Average and SD change during the day
+  
+* By Time of Day - All daily features created above were further stratified by time of day
 
 
 
+```{r, eval=F}
 ### Baseline rate of rain based on historic data 
 * Across years prop of days with rain : `table(data)
 
 * By Month
-```{r, eval=F}
 month.summary <- data.by.day %>% 
   dplyr::group_by(year, month) %>%
   dplyr::summarise(rainDays = sum(rain),
